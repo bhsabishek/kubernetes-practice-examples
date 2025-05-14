@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: my-flask-app
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: my-flask-app
+  template:
+    metadata:
+      labels:
+        app: my-flask-app
+    spec:
+      initContainers:
+        - name: wait-for-mysql
+          image: busybox
+          command: ['sh', '-c', 'until nc -z db 3306; do echo waiting for mysql; sleep 5; done;']
+      containers:
+        - name: flask-app
+          image: abishekbhs/cstm_flask_login_app:latest  # Replace with your Docker image
+          ports:
+            - containerPort: 5000  # The port the Flask app listens to
+          env:
+            - name: DB_HOST
+              value: db  # MySQL service name in Kubernetes
+            - name: DB_USER
+              value: user  # MySQL username
+            - name: DB_PASS
+              value: password  # MySQL password
+            - name: DB_NAME
+              value: mydb  # MySQL database name
+---
+
+# my flask service
+apiVersion: v1
+kind: Service
+metadata:
+  name: flask-app-service
+spec:
+  selector:
+    app: my-flask-app  # Ensure this matches your Flask app pod's label
+  ports:
+    - protocol: TCP
+      port: 5000       # The port that the service will expose (internal cluster)
+      targetPort: 5000  # The port your Flask app is running on inside the container
+  type: ClusterIP     # You can change this to LoadBalancer or NodePort as needed
+
+---
+
+# MySQL Deployment
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mysql
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mysql
+  template:
+    metadata:
+      labels:
+        app: mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0  # Official MySQL image
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: root  # Set MySQL root password
+            - name: MYSQL_DATABASE
+              value: user_db  # Default database
+          ports:
+            - containerPort: 3306  # Default MySQL port
+          volumeMounts:
+            - name: init-sql-volume
+              mountPath: /docker-entrypoint-initdb.d/init.sql  # Mount the init.sql as a file at the correct location
+              subPath: init.sql  # Specify the file name from the ConfigMap
+      volumes:
+        - name: init-sql-volume
+          configMap:
+            name: mysql-init-script
+---
+
+# MySQL Service
+apiVersion: v1
+kind: Service
+metadata:
+  name: db
+spec:
+  selector:
+    app: mysql
+  ports:
+    - port: 3306
+      targetPort: 3306
+
+---
+# configmap
+
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mysql-init-script
+data:
+  init.sql: |
+    -- Your SQL initialization script here
+    CREATE TABLE users (
+    	id INT AUTO_INCREMENT PRIMARY KEY,
+    	username VARCHAR(50) NOT NULL,
+    	password VARCHAR(50) NOT NULL
+    )
+
+---
+# Ingress
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: my-ingress
+  namespace: default
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+spec:
+  rules:
+  - host: abisurya.com  # Define your domain or use localhost for testing
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: flask-app-service   # Name of the service you want to expose
+            port:
+              number: 5000           # Port that the service listens on
